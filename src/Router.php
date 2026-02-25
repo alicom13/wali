@@ -4,45 +4,28 @@ declare(strict_types=1);
 
 namespace Wali\Web;
 
-/**
- * Class Router
- *
- * Router ringan untuk menangani routing HTTP,
- * parameter dinamis, dan eksekusi middleware.
- *
- * Fitur:
- * - Routing berdasarkan HTTP method
- * - Parameter dinamis {id}
- * - Closure & Controller handler
- * - Middleware before & after
- * - 404 & 405 handling
- */
 class Router
 {
-    /**
-     * Daftar route.
-     *
-     * Format:
-     * [
-     *   'GET' => [
-     *      '/users/{id}' => [
-     *          'action' => callable|array,
-     *          'middleware' => []
-     *      ]
-     *   ]
-     * ]
-     */
     protected array $routes = [];
 
-    /**
-     * Middleware global sebelum controller dijalankan.
-     */
     protected array $MwBefore = [];
+    protected array $MwAfter  = [];
 
-    /**
-     * Middleware global setelah controller dijalankan.
-     */
-    protected array $MwAfter = [];
+    /*
+    |--------------------------------------------------------------------------
+    | Register Global Middleware
+    |--------------------------------------------------------------------------
+    */
+
+    public function before(array $middleware): void
+    {
+        $this->MwBefore = $middleware;
+    }
+
+    public function after(array $middleware): void
+    {
+        $this->MwAfter = $middleware;
+    }
 
     /*
     |--------------------------------------------------------------------------
@@ -50,154 +33,114 @@ class Router
     |--------------------------------------------------------------------------
     */
 
-    public function get(string $uri, callable|array $action, array $middleware = []): void
+    public function get(string $uri, callable|array $action, array $mw = []): void
     {
-        $this->add('GET', $uri, $action, $middleware);
+        $this->add('GET', $uri, $action, $mw);
     }
 
-    public function post(string $uri, callable|array $action, array $middleware = []): void
+    public function post(string $uri, callable|array $action, array $mw = []): void
     {
-        $this->add('POST', $uri, $action, $middleware);
+        $this->add('POST', $uri, $action, $mw);
     }
 
-    public function put(string $uri, callable|array $action, array $middleware = []): void
+    protected function add(string $method, string $uri, callable|array $action, array $mw): void
     {
-        $this->add('PUT', $uri, $action, $middleware);
-    }
-
-    public function patch(string $uri, callable|array $action, array $middleware = []): void
-    {
-        $this->add('PATCH', $uri, $action, $middleware);
-    }
-
-    public function delete(string $uri, callable|array $action, array $middleware = []): void
-    {
-        $this->add('DELETE', $uri, $action, $middleware);
-    }
-
-    public function options(string $uri, callable|array $action, array $middleware = []): void
-    {
-        $this->add('OPTIONS', $uri, $action, $middleware);
-    }
-
-    /**
-     * Daftarkan route untuk banyak method sekaligus.
-     */
-    public function match(array $methods, string $uri, callable|array $action, array $middleware = []): void
-    {
-        foreach ($methods as $method) {
-            $this->add(strtoupper($method), $uri, $action, $middleware);
-        }
-    }
-
-    /**
-     * Route untuk semua method.
-     */
-    public function any(string $uri, callable|array $action, array $middleware = []): void
-    {
-        $this->match(
-            ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
-            $uri,
-            $action,
-            $middleware
-        );
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Middleware Global
-    |--------------------------------------------------------------------------
-    */
-
-    /**
-     * Daftarkan middleware global sebelum controller.
-     */
-    public function before(string $class): void
-    {
-        $this->MwBefore[] = $class;
-    }
-
-    /**
-     * Daftarkan middleware global setelah controller.
-     */
-    public function after(string $class): void
-    {
-        $this->MwAfter[] = $class;
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Core Routing
-    |--------------------------------------------------------------------------
-    */
-
-    protected function add(
-        string $method,
-        string $uri,
-        callable|array $action,
-        array $middleware = []
-    ): void {
         $this->routes[$method][$this->normalize($uri)] = [
             'action' => $action,
-            'middleware' => $middleware,
+            'mw' => $mw
         ];
     }
 
-    /**
-     * Menjalankan proses routing berdasarkan request.
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | Dispatch
+    |--------------------------------------------------------------------------
+    */
+
     public function dispatch(): void
     {
-        $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
-        $uri    = $this->currentUri();
+        try {
+            $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+            $uri    = $this->currentUri();
 
-        $allowed = [];
+            foreach ($this->routes[$method] ?? [] as $route => $data) {
 
-        // cek method yang tersedia untuk URI
-        foreach ($this->routes as $httpMethod => $routes) {
-            foreach ($routes as $route => $data) {
-                if (preg_match($this->toRegex($route), $uri)) {
-                    $allowed[] = $httpMethod;
-                }
-            }
-        }
+                if (preg_match($this->toRegex($route), $uri, $matches)) {
 
-        if (!isset($this->routes[$method])) {
-            $this->abort(405, 'Method Not Allowed', $allowed);
-        }
+                    array_shift($matches);
 
-        foreach ($this->routes[$method] as $route => $routeData) {
+                    // global before middleware
+                    if (!$this->runMiddleware($this->MwBefore, $matches)) {
+                        return;
+                    }
 
-            if (preg_match($this->toRegex($route), $uri, $matches)) {
+                    // route middleware before
+                    if (!$this->runMiddleware($data['mw'], $matches)) {
+                        return;
+                    }
 
-                array_shift($matches);
+                    // execute controller
+                    $this->execute($data['action'], $matches);
 
-                // gabungkan middleware global & route
-                $middlewares = array_merge(
-                    $this->MwBefore,
-                    $routeData['middleware']
-                );
+                    // route after middleware
+                    $this->runAfter($data['mw']);
 
-                // jalankan middleware before
-                if (!$this->runBefore($middlewares)) {
+                    // global after middleware
+                    $this->runAfter($this->MwAfter);
+
                     return;
                 }
-
-                // jalankan controller / handler
-                $this->execute($routeData['action'], $matches);
-
-                // jalankan middleware after
-                $this->runAfter($this->MwAfter);
-
-                return;
             }
+
+            $this->abort(404, 'Not Found');
+
+        } catch (\Throwable $e) {
+            $this->abort(500, 'Internal Server Error');
+        }
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Execute Controller
+    |--------------------------------------------------------------------------
+    */
+
+    protected function execute(callable|array $action, array $params): void
+    {
+        if (is_callable($action)) {
+            $result = call_user_func_array($action, $params);
+        } else {
+
+            [$controller, $method] = $action;
+
+            if (!class_exists($controller)) {
+                $this->abort(500, "Controller {$controller} tidak ditemukan");
+            }
+
+            $instance = new $controller;
+
+            if (!method_exists($instance, $method)) {
+                $this->abort(500, "Method {$method} tidak ditemukan");
+            }
+
+            $result = call_user_func_array([$instance, $method], $params);
         }
 
-        if (!empty($allowed)) {
-            $this->abort(405, 'Method Not Allowed', $allowed);
+        // ===== Response lifecycle =====
+
+        if ($result instanceof Response) {
+            return;
         }
 
-        $this->abort(404, 'Not Found');
+        if (is_array($result)) {
+            Response::json($result);
+            return;
+        }
+
+        if (is_string($result)) {
+            echo $result;
+            return;
+        }
     }
 
     /*
@@ -206,27 +149,22 @@ class Router
     |--------------------------------------------------------------------------
     */
 
-    /**
-     * Menjalankan middleware sebelum controller.
-     * Return false jika proses harus dihentikan.
-     */
-    protected function runBefore(array $middlewares): bool
+    protected function runMiddleware(array $middleware, array $params): bool
     {
-        foreach ($middlewares as $middleware) {
-            if ((new $middleware)->before() === false) {
+        foreach ($middleware as $mw) {
+            $instance = new $mw;
+            if (!$instance->before($params)) {
                 return false;
             }
         }
         return true;
     }
 
-    /**
-     * Menjalankan middleware setelah controller.
-     */
-    protected function runAfter(array $middlewares): void
+    protected function runAfter(array $middleware): void
     {
-        foreach ($middlewares as $middleware) {
-            (new $middleware)->after();
+        foreach ($middleware as $mw) {
+            $instance = new $mw;
+            $instance->after();
         }
     }
 
@@ -236,69 +174,27 @@ class Router
     |--------------------------------------------------------------------------
     */
 
-    /**
-     * Eksekusi handler route.
-     */
-    protected function execute(callable|array $action, array $params): void
-    {
-        if (is_callable($action)) {
-            call_user_func_array($action, $params);
-            return;
-        }
-
-        [$controller, $method] = $action;
-
-        if (!class_exists($controller)) {
-            $this->abort(500, "Controller {$controller} tidak ditemukan");
-        }
-
-        $instance = new $controller;
-
-        if (!method_exists($instance, $method)) {
-            $this->abort(500, "Method {$method} tidak ditemukan");
-        }
-
-        call_user_func_array([$instance, $method], $params);
-    }
-
-    /**
-     * Mengubah route menjadi regex.
-     */
     protected function toRegex(string $route): string
     {
         $pattern = preg_replace('#\{[^}]+\}#', '([^/]+)', $route);
         return "#^{$pattern}$#";
     }
 
-    /**
-     * Normalisasi URI.
-     */
     protected function normalize(string $uri): string
     {
         $uri = '/' . trim($uri, '/');
         return $uri === '/' ? '/' : rtrim($uri, '/');
     }
 
-    /**
-     * Mengambil URI request saat ini.
-     */
     protected function currentUri(): string
     {
         $uri = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
         return $this->normalize($uri ?: '/');
     }
 
-    /**
-     * Menghentikan request dengan status HTTP.
-     */
-    protected function abort(int $code, string $message, array $allowed = []): void
+    protected function abort(int $code, string $message): void
     {
         http_response_code($code);
-
-        if ($code === 405 && !empty($allowed)) {
-            header('Allow: ' . implode(', ', $allowed));
-        }
-
         echo $message;
         exit;
     }
