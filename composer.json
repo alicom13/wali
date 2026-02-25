@@ -1,0 +1,23 @@
+{
+  "name": "wali/web",
+  "description": "Wali Web - Lightweight Production MVC Core",
+  "type": "library",
+  "license": "MIT",
+  "keywords": ["php", "mvc", "framework", "router"],
+  "authors": [
+    {
+      "name": "Ali",
+      "email": "aliyunet@gmail.com"
+    }
+  ],
+  "autoload": {
+    "psr-4": {
+      "Wali\\Web\\": "src/"
+    }
+  },
+  "require": {
+    "php": ">=8.1"
+  },
+  "minimum-stability": "stable",
+  "prefer-stable": true
+}
